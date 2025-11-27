@@ -1,3 +1,5 @@
+import type { ObjectId } from "mongodb"
+
 export type GameStatus = "playing" | "completed" | "backlog"
 
 export interface Game {
@@ -16,6 +18,7 @@ export interface Game {
   developer?: string
   publisher?: string
   isNew?: boolean // Flag for recently added games
+  userId?: string // ID del usuario propietario
   createdAt?: string
   updatedAt?: string
 }
@@ -23,12 +26,28 @@ export interface Game {
 export interface Review {
   id: string
   gameId: string
+  userId?: string // ID del usuario que escribió la reseña
   gameTitle: string
   gameCover: string
   rating: number
   content: string
   createdAt: string
   updatedAt?: string
+}
+
+// Tipos para MongoDB (sin el campo 'id', usa '_id' internamente)
+export interface GameDocument
+  extends Omit<Game, "id" | "createdAt" | "updatedAt"> {
+  _id?: ObjectId
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface ReviewDocument
+  extends Omit<Review, "id" | "createdAt" | "updatedAt"> {
+  _id?: ObjectId
+  createdAt: Date
+  updatedAt: Date
 }
 
 export interface GameStats {

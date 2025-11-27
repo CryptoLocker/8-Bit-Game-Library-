@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Navigation } from "@/components/navigation"
 import { StatCard } from "@/components/stat-card"
 import { TopGamesList } from "@/components/top-games-list"
@@ -12,64 +12,80 @@ import { PlatformChart } from "@/components/platform-chart"
 import { Gamepad2, Clock, Star, TrendingUp, Trophy, Target, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Spinner } from "@/components/ui/spinner"
 import type { Game } from "@/lib/types"
+import { gamesAPI } from "@/lib/api-client"
 import { exportStatsToPDF } from "@/lib/pdf-export"
+import { useSession } from "next-auth/react"
+import Link from "next/link"
 
 export default function StatsPage() {
+  const { status } = useSession()
   const [games, setGames] = useState<Game[]>([])
   const [period, setPeriod] = useState<"all" | "month" | "quarter" | "year">("all")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchGames = useCallback(async () => {
+    if (status !== "authenticated") {
+      return
+    }
+
+    try {
+      setLoading(true)
+      const data = await gamesAPI.getAll()
+      setGames(data)
+      setError(null)
+    } catch (err) {
+      console.error("Error loading stats games", err)
+      setError(err instanceof Error ? err.message : "Failed to load games")
+    } finally {
+      setLoading(false)
+    }
+  }, [status])
 
   useEffect(() => {
-    const loadGames = () => {
-      const storedGames = localStorage.getItem("games")
-      if (storedGames) {
-        setGames(JSON.parse(storedGames))
-      }
+    if (status === "authenticated") {
+      void fetchGames()
     }
+  }, [fetchGames, status])
 
-    loadGames()
-
-    // Listen for storage changes from other tabs/windows
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === "games") {
-        loadGames()
-      }
-    }
-
-    // Listen for custom event for same-tab updates
+  useEffect(() => {
     const handleGamesUpdate = () => {
-      loadGames()
+      void fetchGames()
     }
 
-    window.addEventListener("storage", handleStorageChange)
     window.addEventListener("gamesUpdated", handleGamesUpdate)
+    window.addEventListener("reviewsUpdated", handleGamesUpdate)
 
     return () => {
-      window.removeEventListener("storage", handleStorageChange)
       window.removeEventListener("gamesUpdated", handleGamesUpdate)
+      window.removeEventListener("reviewsUpdated", handleGamesUpdate)
     }
-  }, [])
+  }, [fetchGames])
 
-  const filteredGames = games.filter((game) => {
-    if (period === "all") return true
-    if (!game.createdAt) return false
+  const filteredGames = useMemo(() => {
+    return games.filter((game) => {
+      if (period === "all") return true
+      if (!game.createdAt) return false
 
-    const gameDate = new Date(game.createdAt)
-    const now = new Date()
-    const diffTime = now.getTime() - gameDate.getTime()
-    const diffDays = diffTime / (1000 * 60 * 60 * 24)
+      const gameDate = new Date(game.createdAt)
+      const now = new Date()
+      const diffTime = now.getTime() - gameDate.getTime()
+      const diffDays = diffTime / (1000 * 60 * 60 * 24)
 
-    switch (period) {
-      case "month":
-        return diffDays <= 30
-      case "quarter":
-        return diffDays <= 90
-      case "year":
-        return diffDays <= 365
-      default:
-        return true
-    }
-  })
+      switch (period) {
+        case "month":
+          return diffDays <= 30
+        case "quarter":
+          return diffDays <= 90
+        case "year":
+          return diffDays <= 365
+        default:
+          return true
+      }
+    })
+  }, [games, period])
 
   const totalGames = filteredGames.length
   const completedGames = filteredGames.filter((g) => g.status === "completed").length
@@ -101,76 +117,111 @@ export default function StatsPage() {
     <div className="min-h-screen">
       <Navigation />
       <main className="container mx-auto px-4 py-8">
-        <div className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <h1 className="text-4xl font-bold mb-2 text-balance">Gaming Statistics</h1>
-            <p className="text-muted-foreground text-lg">Track your gaming journey with detailed metrics</p>
+        {status === "unauthenticated" ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
+            <p className="text-muted-foreground">Inicia sesión para ver tus estadísticas.</p>
+            <Link href="/auth/login" className="text-primary underline-offset-4 hover:underline">
+              Ir al inicio de sesión
+            </Link>
           </div>
-
-          <div className="flex items-center gap-3">
-            <Select value={period} onValueChange={(value: any) => setPeriod(value)}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Select period" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Time</SelectItem>
-                <SelectItem value="month">Last Month</SelectItem>
-                <SelectItem value="quarter">Last Quarter</SelectItem>
-                <SelectItem value="year">Last Year</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Button onClick={handleExportPDF} variant="outline" className="gap-2 bg-transparent">
-              <Download className="h-4 w-4" />
-              Export PDF
-            </Button>
+        ) : status === "loading" ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-3">
+            <Spinner className="h-8 w-8" />
+            <p className="text-muted-foreground">Verificando sesión...</p>
           </div>
-        </div>
-
-        <div className="grid gap-6">
-          {/* Key Metrics */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <StatCard title="Total Games" value={totalGames} icon={Gamepad2} description="In your library" />
-
-            <StatCard
-              title="Completed"
-              value={completedGames}
-              icon={Trophy}
-              description={`${completionRate.toFixed(0)}% completion rate`}
-            />
-
-            <StatCard title="Total Hours" value={`${totalHours}h`} icon={Clock} description="Time invested" />
-
-            <StatCard
-              title="Avg Rating"
-              value={averageRating > 0 ? averageRating.toFixed(1) : "N/A"}
-              icon={Star}
-              description={`From ${gamesWithRatings.length} rated games`}
-            />
-
-            <StatCard title="Currently Playing" value={currentlyPlaying} icon={TrendingUp} description="Active games" />
-
-            <StatCard title="Backlog" value={backlogCount} icon={Target} description="Games to play" />
+        ) : loading ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-3">
+            <Spinner className="h-8 w-8" />
+            <p className="text-muted-foreground">Loading your statistics...</p>
           </div>
-
-          <YearInReview games={filteredGames} />
-
-          {/* Charts and Visualizations */}
-          <div className="grid md:grid-cols-2 gap-6">
-            <StatusBreakdown games={filteredGames} />
-            <GenreChart games={filteredGames} />
+        ) : error ? (
+          <div className="text-center py-20 space-y-4">
+            <p className="text-muted-foreground">{error}</p>
+            <button
+              type="button"
+              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+              onClick={() => void fetchGames()}
+            >
+              Try again
+            </button>
           </div>
+        ) : (
+          <div className="grid gap-6">
+            <div className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <h1 className="text-4xl font-bold mb-2 text-balance">Gaming Statistics</h1>
+                <p className="text-muted-foreground text-lg">Track your gaming journey with detailed metrics</p>
+              </div>
 
-          <PlatformChart games={filteredGames} />
+              <div className="flex items-center gap-3">
+                <Select value={period} onValueChange={(value: any) => setPeriod(value)}>
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Select period" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Time</SelectItem>
+                    <SelectItem value="month">Last Month</SelectItem>
+                    <SelectItem value="quarter">Last Quarter</SelectItem>
+                    <SelectItem value="year">Last Year</SelectItem>
+                  </SelectContent>
+                </Select>
 
-          <MonthlyActivityChart games={filteredGames} />
+                <Button
+                  onClick={handleExportPDF}
+                  variant="outline"
+                  className="gap-2 bg-transparent"
+                  disabled={loading || !!error || filteredGames.length === 0}
+                >
+                  <Download className="h-4 w-4" />
+                  Export PDF
+                </Button>
+              </div>
+            </div>
 
-          {/* Top Games Lists */}
-          <div className="grid md:grid-cols-2 gap-6">
-            <TopGamesList games={filteredGames} sortBy="hours" />
-            <TopGamesList games={filteredGames} sortBy="rating" />
+            {/* Key Metrics */}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+              <StatCard title="Total Games" value={totalGames} icon={Gamepad2} description="In your library" />
+
+              <StatCard
+                title="Completed"
+                value={completedGames}
+                icon={Trophy}
+                description={`${completionRate.toFixed(0)}% completion rate`}
+              />
+
+              <StatCard title="Total Hours" value={`${totalHours}h`} icon={Clock} description="Time invested" />
+
+              <StatCard
+                title="Avg Rating"
+                value={averageRating > 0 ? averageRating.toFixed(1) : "N/A"}
+                icon={Star}
+                description={`From ${gamesWithRatings.length} rated games`}
+              />
+
+              <StatCard title="Currently Playing" value={currentlyPlaying} icon={TrendingUp} description="Active games" />
+
+              <StatCard title="Backlog" value={backlogCount} icon={Target} description="Games to play" />
+            </div>
+
+            <YearInReview games={filteredGames} />
+
+            {/* Charts and Visualizations */}
+            <div className="grid md:grid-cols-2 gap-6">
+              <StatusBreakdown games={filteredGames} />
+              <GenreChart games={filteredGames} />
+            </div>
+
+            <PlatformChart games={filteredGames} />
+
+            <MonthlyActivityChart games={filteredGames} />
+
+            {/* Top Games Lists */}
+            <div className="grid md:grid-cols-2 gap-6">
+              <TopGamesList games={filteredGames} sortBy="hours" />
+              <TopGamesList games={filteredGames} sortBy="rating" />
+            </div>
           </div>
-        </div>
+        )}
       </main>
     </div>
   )

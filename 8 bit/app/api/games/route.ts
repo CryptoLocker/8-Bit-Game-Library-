@@ -1,88 +1,121 @@
-import { NextResponse } from "next/server"
-import type { Game } from "@/lib/types"
+import { NextRequest, NextResponse } from "next/server"
+import type { Game, GameDocument } from "@/lib/types"
+import { getCollection, Collections } from "@/lib/mongodb"
+import { getSessionUser } from "@/lib/auth"
 
-// In-memory storage (replace with database in production)
-const games: Game[] = [
-  {
-    id: "1",
-    title: "The Legend of Zelda: Breath of the Wild",
-    coverUrl: "/zelda-breath-of-the-wild-game-cover.jpg",
-    status: "completed",
-    hoursPlayed: 120,
-    rating: 5,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "2",
-    title: "Elden Ring",
-    coverUrl: "/generic-fantasy-game-cover.png",
-    status: "playing",
-    hoursPlayed: 45,
-    rating: 5,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "3",
-    title: "Cyberpunk 2077",
-    coverUrl: "/cyberpunk-2077-inspired-cover.png",
-    status: "backlog",
-    hoursPlayed: 0,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "4",
-    title: "Red Dead Redemption 2",
-    coverUrl: "/red-dead-redemption-2-game-cover.jpg",
-    status: "completed",
-    hoursPlayed: 85,
-    rating: 5,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "5",
-    title: "God of War Ragnarök",
-    coverUrl: "/god-of-war-ragnarok-game-cover.jpg",
-    status: "playing",
-    hoursPlayed: 30,
-    rating: 4,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "6",
-    title: "Hollow Knight",
-    coverUrl: "/hollow-knight-game-cover.jpg",
-    status: "completed",
-    hoursPlayed: 50,
-    rating: 5,
-    createdAt: new Date().toISOString(),
-  },
-]
-
-// GET /api/games - Get all games
-export async function GET() {
-  return NextResponse.json(games)
+// Función helper para convertir documento de MongoDB a Game
+function documentToGame(doc: any): Game {
+  return {
+    id: doc._id.toString(),
+    title: doc.title,
+    coverUrl: doc.coverUrl,
+    status: doc.status,
+    hoursPlayed: doc.hoursPlayed,
+    rating: doc.rating,
+    genres: doc.genres,
+    platforms: doc.platforms,
+    releaseDate: doc.releaseDate,
+    description: doc.description,
+    developer: doc.developer,
+    publisher: doc.publisher,
+    source: doc.source,
+    externalId: doc.externalId,
+    isNew: doc.isNew,
+    userId: doc.userId,
+    createdAt:
+      doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
+    updatedAt:
+      doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
+  }
 }
 
-// POST /api/games - Create a new game
-export async function POST(request: Request) {
+// GET /api/games - Obtener todos los juegos
+export async function GET(request: NextRequest) {
+  try {
+    const sessionUser = await getSessionUser()
+    if (!sessionUser) {
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+    }
+    const userId = sessionUser.id
+
+    const collection = await getCollection<GameDocument>(Collections.GAMES)
+    
+    // Buscar todos los juegos del usuario
+    const games = await collection.find({ userId }).sort({ createdAt: -1 }).toArray()
+    
+    // Convertir documentos de MongoDB a objetos Game
+    const gamesResponse = games.map(documentToGame)
+
+    return NextResponse.json(gamesResponse)
+  } catch (error) {
+    console.error("Error fetching games:", error)
+    return NextResponse.json(
+      { message: "Error fetching games", error: String(error) },
+      { status: 500 }
+    )
+  }
+}
+
+// POST /api/games - Crear un nuevo juego
+export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
 
-    const newGame: Game = {
-      id: Date.now().toString(),
+    const sessionUser = await getSessionUser()
+    if (!sessionUser) {
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+    }
+    const userId = sessionUser.id
+
+    // Validar campos requeridos
+    if (!body.title || !body.coverUrl) {
+      return NextResponse.json(
+        { message: "Title and coverUrl are required" },
+        { status: 400 }
+      )
+    }
+
+    const collection = await getCollection<GameDocument>(Collections.GAMES)
+    
+  const now = new Date()
+
+    // Crear el documento del juego
+    const gameDocument: GameDocument = {
       title: body.title,
-      coverUrl: body.coverUrl || "",
+      coverUrl: body.coverUrl,
       status: body.status || "backlog",
       hoursPlayed: body.hoursPlayed || 0,
       rating: body.rating,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      genres: body.genres || [],
+      platforms: body.platforms || [],
+      releaseDate: body.releaseDate,
+      description: body.description,
+      developer: body.developer,
+      publisher: body.publisher,
+      source: body.source || "manual",
+      externalId: body.externalId,
+      isNew: body.isNew !== undefined ? body.isNew : true,
+      userId,
+      createdAt: now,
+      updatedAt: now,
     }
 
-    games.push(newGame)
+    // Insertar en MongoDB
+    const result = await collection.insertOne(gameDocument as any)
+    
+    // Obtener el juego recién creado
+    const newGame = await collection.findOne({ _id: result.insertedId })
+    
+    if (!newGame) {
+      throw new Error("Failed to retrieve created game")
+    }
 
-    return NextResponse.json(newGame, { status: 201 })
+    return NextResponse.json(documentToGame(newGame), { status: 201 })
   } catch (error) {
-    return NextResponse.json({ message: "Invalid request body" }, { status: 400 })
+    console.error("Error creating game:", error)
+    return NextResponse.json(
+      { message: "Error creating game", error: String(error) },
+      { status: 500 }
+    )
   }
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Navigation } from "@/components/navigation"
 import Image from "next/image"
@@ -11,10 +11,14 @@ import { Button } from "@/components/ui/button"
 import { ReviewCard } from "@/components/review-card"
 import { ReviewFormDialog } from "@/components/review-form-dialog"
 import { GameFormDialog } from "@/components/game-form-dialog"
+import { Spinner } from "@/components/ui/spinner"
 import type { Game, Review } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { CheckCircle2, PlayCircle } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { gamesAPI, reviewsAPI } from "@/lib/api-client"
+import { useSession } from "next-auth/react"
+import Link from "next/link"
 
 const statusConfig = {
   playing: {
@@ -36,38 +40,56 @@ const statusConfig = {
 
 export default function GameDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter()
+  const { status } = useSession()
   const { toast } = useToast()
   const [game, setGame] = useState<Game | null>(null)
   const [reviews, setReviews] = useState<Review[]>([])
   const [isReviewFormOpen, setIsReviewFormOpen] = useState(false)
   const [isEditGameOpen, setIsEditGameOpen] = useState(false)
   const [editingReview, setEditingReview] = useState<Review | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [working, setWorking] = useState(false)
+
+  const fetchGameData = useCallback(async () => {
+    if (status !== "authenticated") {
+      return
+    }
+
+    try {
+      setLoading(true)
+      const [gameData, reviewsData] = await Promise.all([gamesAPI.getById(params.id), reviewsAPI.getByGameId(params.id)])
+      setGame(gameData)
+      setReviews(reviewsData)
+      setError(null)
+    } catch (err) {
+      console.error("Error loading game detail", err)
+      const message = err instanceof Error ? err.message : "Failed to load game"
+      setError(message)
+      toast({
+        title: "Unable to load game",
+        description: message,
+        variant: "destructive",
+      })
+      router.push("/library")
+    } finally {
+      setLoading(false)
+    }
+  }, [params.id, router, status, toast])
 
   useEffect(() => {
-    const gamesData = localStorage.getItem("games")
-    const reviewsData = localStorage.getItem("reviews")
-
-    if (gamesData) {
-      const games: Game[] = JSON.parse(gamesData)
-      const foundGame = games.find((g) => g.id === params.id)
-      if (foundGame) {
-        setGame(foundGame)
-      } else {
-        toast({
-          title: "Game not found",
-          description: "The game you're looking for doesn't exist.",
-          variant: "destructive",
-        })
-        router.push("/")
-      }
+    if (status === "authenticated") {
+      void fetchGameData()
     }
+  }, [fetchGameData, status])
 
-    if (reviewsData) {
-      const allReviews: Review[] = JSON.parse(reviewsData)
-      const gameReviews = allReviews.filter((r) => r.gameId === params.id)
-      setReviews(gameReviews)
-    }
-  }, [params.id, router, toast])
+  const dispatchGamesUpdated = useCallback(() => {
+    window.dispatchEvent(new Event("gamesUpdated"))
+  }, [])
+
+  const dispatchReviewsUpdated = useCallback(() => {
+    window.dispatchEvent(new Event("reviewsUpdated"))
+  }, [])
 
   const handleAddReview = () => {
     setEditingReview(null)
@@ -79,73 +101,152 @@ export default function GameDetailPage({ params }: { params: { id: string } }) {
     setIsReviewFormOpen(true)
   }
 
-  const handleSaveReview = (reviewData: Omit<Review, "id" | "createdAt"> & { id?: string }) => {
-    const reviewsData = localStorage.getItem("reviews")
-    const allReviews: Review[] = reviewsData ? JSON.parse(reviewsData) : []
+  const handleSaveReview = useCallback(
+    async (reviewData: Omit<Review, "id" | "createdAt"> & { id?: string }) => {
+      if (working || !game) return
 
-    if (reviewData.id) {
-      const updatedReviews = allReviews.map((r) =>
-        r.id === reviewData.id
-          ? { ...reviewData, id: reviewData.id, createdAt: r.createdAt, updatedAt: new Date().toISOString() }
-          : r,
-      )
-      localStorage.setItem("reviews", JSON.stringify(updatedReviews))
-      setReviews(updatedReviews.filter((r) => r.gameId === params.id))
-      toast({
-        title: "Review updated",
-        description: "Your review has been updated successfully.",
-      })
-    } else {
-      const newReview: Review = {
-        ...reviewData,
-        id: Date.now().toString(),
-        createdAt: new Date().toISOString(),
+      try {
+        setWorking(true)
+        if (reviewData.id) {
+          const { id, ...payload } = reviewData
+          const updated = await reviewsAPI.update(id, payload)
+          setReviews((prev) => prev.map((review) => (review.id === updated.id ? updated : review)))
+          toast({
+            title: "Review updated",
+            description: "Your review has been updated successfully.",
+          })
+        } else {
+          const created = await reviewsAPI.create(reviewData)
+          setReviews((prev) => [created, ...prev])
+          toast({
+            title: "Review added",
+            description: "Your review has been added successfully.",
+          })
+        }
+        dispatchReviewsUpdated()
+      } catch (err) {
+        console.error("Error saving review", err)
+        toast({
+          title: "Something went wrong",
+          description: err instanceof Error ? err.message : "Failed to save review",
+          variant: "destructive",
+        })
+      } finally {
+        setWorking(false)
       }
-      const updatedReviews = [newReview, ...allReviews]
-      localStorage.setItem("reviews", JSON.stringify(updatedReviews))
-      setReviews([newReview, ...reviews])
-      toast({
-        title: "Review added",
-        description: "Your review has been added successfully.",
-      })
-    }
-  }
+    },
+    [dispatchReviewsUpdated, game, toast, working],
+  )
 
-  const handleDeleteReview = (reviewId: string) => {
-    const reviewsData = localStorage.getItem("reviews")
-    if (reviewsData) {
-      const allReviews: Review[] = JSON.parse(reviewsData)
-      const updatedReviews = allReviews.filter((r) => r.id !== reviewId)
-      localStorage.setItem("reviews", JSON.stringify(updatedReviews))
-      setReviews(reviews.filter((r) => r.id !== reviewId))
-      toast({
-        title: "Review deleted",
-        description: "Your review has been deleted successfully.",
-      })
-    }
-  }
+  const handleDeleteReview = useCallback(
+    async (reviewId: string) => {
+      if (working) return
 
-  const handleUpdateGame = (updatedGame: Game) => {
-    const gamesData = localStorage.getItem("games")
-    if (gamesData) {
-      const games: Game[] = JSON.parse(gamesData)
-      const updatedGames = games.map((g) => (g.id === updatedGame.id ? updatedGame : g))
-      localStorage.setItem("games", JSON.stringify(updatedGames))
-      setGame(updatedGame)
-      toast({
-        title: "Game updated",
-        description: "Game information has been updated successfully.",
-      })
-    }
-  }
+      try {
+        setWorking(true)
+  await reviewsAPI.delete(reviewId)
+        setReviews((prev) => prev.filter((review) => review.id !== reviewId))
+        toast({
+          title: "Review deleted",
+          description: "Your review has been deleted successfully.",
+        })
+        dispatchReviewsUpdated()
+      } catch (err) {
+        console.error("Error deleting review", err)
+        toast({
+          title: "Something went wrong",
+          description: err instanceof Error ? err.message : "Failed to delete review",
+          variant: "destructive",
+        })
+      } finally {
+        setWorking(false)
+      }
+    },
+    [dispatchReviewsUpdated, toast, working],
+  )
 
-  if (!game) {
+  const handleUpdateGame = useCallback(
+    async (gameData: Omit<Game, "id"> & { id?: string }) => {
+      if (!gameData.id || working) return
+
+      try {
+        setWorking(true)
+        const { id, ...payload } = gameData
+        const updated = await gamesAPI.update(id, payload)
+        setGame(updated)
+        toast({
+          title: "Game updated",
+          description: "Game information has been updated successfully.",
+        })
+        dispatchGamesUpdated()
+      } catch (err) {
+        console.error("Error updating game", err)
+        toast({
+          title: "Something went wrong",
+          description: err instanceof Error ? err.message : "Failed to update game",
+          variant: "destructive",
+        })
+      } finally {
+        setWorking(false)
+      }
+    },
+    [dispatchGamesUpdated, toast, working],
+  )
+
+  if (status === "loading") {
     return (
       <div className="min-h-screen">
         <Navigation />
         <main className="container mx-auto px-4 py-8">
-          <div className="text-center">
+          <div className="flex flex-col items-center justify-center py-20 gap-3">
+            <Spinner className="h-8 w-8" />
+            <p className="text-muted-foreground">Verificando sesión...</p>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  if (status === "unauthenticated") {
+    return (
+      <div className="min-h-screen">
+        <Navigation />
+        <main className="container mx-auto px-4 py-8">
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
+            <p className="text-muted-foreground">Inicia sesión para ver el detalle del juego.</p>
+            <Link href="/auth/login" className="text-primary underline-offset-4 hover:underline">
+              Ir al inicio de sesión
+            </Link>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen">
+        <Navigation />
+        <main className="container mx-auto px-4 py-8">
+          <div className="flex flex-col items-center justify-center py-20 gap-3">
+            <Spinner className="h-8 w-8" />
             <p className="text-muted-foreground">Loading game...</p>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  if (!game || error) {
+    return (
+      <div className="min-h-screen">
+        <Navigation />
+        <main className="container mx-auto px-4 py-8">
+          <div className="text-center space-y-4 py-20">
+            <p className="text-muted-foreground">{error ?? "Game not found."}</p>
+            <Button onClick={() => router.push("/library")} variant="outline">
+              Back to Library
+            </Button>
           </div>
         </main>
       </div>

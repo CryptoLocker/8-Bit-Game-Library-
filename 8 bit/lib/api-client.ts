@@ -2,14 +2,29 @@ import type { Game, Review } from "./types"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api"
 
+function toQueryString(params?: Record<string, string | undefined | null>) {
+  if (!params) return ""
+
+  const searchParams = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, value)
+    }
+  }
+
+  const query = searchParams.toString()
+  return query ? `?${query}` : ""
+}
+
 // Generic fetch wrapper with error handling
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    credentials: "include",
+    ...options,
     headers: {
       "Content-Type": "application/json",
       ...options?.headers,
     },
-    ...options,
   })
 
   if (!response.ok) {
@@ -48,7 +63,8 @@ export const gamesAPI = {
 export const reviewsAPI = {
   getAll: () => fetchAPI<Review[]>("/reviews"),
 
-  getByGameId: (gameId: string) => fetchAPI<Review[]>(`/reviews?gameId=${gameId}`),
+  getByGameId: (gameId: string) =>
+    fetchAPI<Review[]>(`/reviews${toQueryString({ gameId })}`),
 
   create: (review: Omit<Review, "id" | "createdAt" | "updatedAt">) =>
     fetchAPI<Review>("/reviews", {
